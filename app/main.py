@@ -392,7 +392,7 @@ def page_member_bills():
 
     st.title("🗺️ 의원별 발의 법안")
 
-    # ── 의원 선택됨: 법안 뷰로 전환 (지도 UI 숨김) ────────────────
+    # ── 의원 선택됨: 법안 뷰로 전환 ─────────────────────────
     selected_proposer = st.session_state.get("selected_proposer_member")
     if selected_proposer:
         _render_member_bills(selected_proposer, df, members_df)
@@ -410,20 +410,16 @@ def page_member_bills():
         members_df["gungu"] = members_df["orig_nm"].apply(parse_gungu)
 
         map_sido = st.session_state.get("map_sido")
-        map_gungu = st.session_state.get("map_gungu")
+        map_gungu = st.session_state.get("map_gungu")  # 필터 용도 (navigation 아님)
 
-        # 뒤로가기 네비게이션
+        # 뒤로가기
         if map_sido:
-            nav1, nav2, _ = st.columns([1, 1, 6])
-            if nav1.button("◀ 전국"):
+            if st.button("◀ 전국 지도로"):
                 st.session_state.pop("map_sido", None)
                 st.session_state.pop("map_gungu", None)
                 st.rerun()
-            if map_gungu and nav2.button(f"◀ {map_sido}"):
-                st.session_state.pop("map_gungu", None)
-                st.rerun()
 
-        # ── 레벨 1: 시도 지도 ────────────────────────────────────
+        # ── 레벨 1: 시도 choropleth ─────────────────────────────
         if not map_sido:
             prov_geo, _ = load_korea_geojson()
             map_col, ctrl_col = st.columns([3, 1])
@@ -456,7 +452,6 @@ def page_member_bills():
                         f"{s}<br>{members_df[members_df['sido']==s].shape[0]}명"
                         for s in short_names
                     ]
-
                     fig = go.Figure(
                         go.Choropleth(
                             geojson=prov_geo,
@@ -472,10 +467,7 @@ def page_member_bills():
                         )
                     )
                     fig.update_geos(fitbounds="locations", visible=False)
-                    fig.update_layout(
-                        margin=dict(l=0, r=0, t=10, b=0),
-                        height=500,
-                    )
+                    fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=500)
                     st.caption("💡 지도를 클릭하거나 우측 목록에서 선택하세요")
                     event = st.plotly_chart(
                         fig, on_select="rerun", key="sido_choro", use_container_width=True
@@ -490,121 +482,66 @@ def page_member_bills():
                 else:
                     st.warning("지도 데이터를 불러오지 못했습니다.")
 
-        # ── 레벨 2: 시군구 지도 ──────────────────────────────────
-        elif not map_gungu:
+        # ── 레벨 2: 시도 의원 목록 + 시군구 필터 ─────────────────
+        else:
             sido_members = members_df[members_df["sido"] == map_sido]
-            st.markdown(f"**{map_sido}** — 지역구 의원 {len(sido_members)}명")
 
-            _, muni_geo = load_korea_geojson()
-            sido_code = SIDO_CODE.get(map_sido, "")
+            # 시군구 필터 적용
+            if map_gungu:
+                display_members = sido_members[
+                    sido_members["gungu"].str.contains(map_gungu, na=False, regex=False)
+                    | sido_members["orig_nm"].str.contains(map_gungu, na=False, regex=False)
+                ]
+            else:
+                display_members = sido_members
 
             map_col, ctrl_col = st.columns([3, 1])
 
-            if muni_geo and sido_code:
-                sido_feats = [
-                    f for f in muni_geo["features"]
-                    if str(f["properties"].get("SIG_CD", ""))[:2] == sido_code
-                ]
-            else:
-                sido_feats = []
-
             with ctrl_col:
-                st.markdown("**시군구 선택**")
+                st.markdown("**시군구 필터**")
+                # 전체 버튼
+                all_label = f"{'▶ ' if not map_gungu else ''}전체  {len(sido_members)}명"
+                if st.button(all_label, key="gu_all", use_container_width=True):
+                    st.session_state.pop("map_gungu", None)
+                    st.rerun()
+
                 gu_list = sorted([g for g in sido_members["gungu"].unique() if g])
                 for gu in gu_list:
-                    cnt = sido_members[sido_members["gungu"] == gu].shape[0]
-                    if st.button(
-                        f"{gu}  {cnt}명",
-                        key=f"gu_btn_{gu}",
-                        use_container_width=True,
-                    ):
-                        st.session_state["map_gungu"] = gu
+                    cnt = sido_members[
+                        sido_members["gungu"].str.contains(gu, na=False, regex=False)
+                    ].shape[0]
+                    label = f"{'▶ ' if map_gungu == gu else ''}{gu}  {cnt}명"
+                    if st.button(label, key=f"gu_btn_{gu}", use_container_width=True):
+                        if map_gungu == gu:
+                            st.session_state.pop("map_gungu", None)
+                        else:
+                            st.session_state["map_gungu"] = gu
                         st.rerun()
 
             with map_col:
-                if sido_feats:
-                    filtered_geo = {"type": "FeatureCollection", "features": sido_feats}
-                    gname_key = _get_geo_name_key(sido_feats)
-                    geo_names = [f["properties"].get(gname_key, "") for f in sido_feats]
-
-                    sido_members_copy = sido_members.copy()
-                    sido_members_copy["gungu_geo"] = sido_members_copy["gungu"].apply(
-                        lambda g: _match_gungu_to_geo(g, geo_names)
-                    )
-                    gungu_cnt_map = (
-                        sido_members_copy[sido_members_copy["gungu_geo"] != ""]
-                        .groupby("gungu_geo")
-                        .size()
-                        .to_dict()
-                    )
-                    hover_texts = [
-                        f"{gn}<br>{gungu_cnt_map.get(gn, 0)}명" for gn in geo_names
-                    ]
-
-                    fig2 = go.Figure(
-                        go.Choropleth(
-                            geojson=filtered_geo,
-                            locations=geo_names,
-                            featureidkey=f"properties.{gname_key}",
-                            z=[1] * len(geo_names),
-                            colorscale=[[0, "#93C5FD"], [1, "#93C5FD"]],
-                            showscale=False,
-                            marker_line_color="white",
-                            marker_line_width=1.5,
-                            text=hover_texts,
-                            hovertemplate="%{text}<extra></extra>",
-                        )
-                    )
-                    fig2.update_geos(fitbounds="locations", visible=False)
-                    fig2.update_layout(
-                        margin=dict(l=0, r=0, t=10, b=0),
-                        height=480,
-                    )
-                    st.caption("💡 시군구를 클릭하거나 우측 목록에서 선택하세요")
-                    event2 = st.plotly_chart(
-                        fig2, on_select="rerun", key="gungu_choro", use_container_width=True
-                    )
-                    if event2 and hasattr(event2, "selection") and event2.selection.points:
-                        clicked_gu = event2.selection.points[0].get("location", "")
-                        if clicked_gu:
-                            st.session_state["map_gungu"] = clicked_gu
-                            st.rerun()
-                else:
-                    st.info("이 지역의 시군구 데이터가 없습니다.")
-
-            # 시도 전체 의원 미리보기
-            st.markdown("---")
-            st.markdown(f"**{map_sido} 전체 의원**")
-            cols = st.columns(3)
-            for i, (_, m) in enumerate(sido_members.iterrows()):
-                with cols[i % 3]:
-                    if render_member_card(m, on_click_key=f"mc_sido_{i}"):
-                        st.session_state["selected_proposer_member"] = m["name"]
-                        st.rerun()
-
-        # ── 레벨 3: 시군구 의원 목록 ─────────────────────────────
-        else:
-            st.markdown(f"**{map_sido} · {map_gungu}**")
-            gungu_members = members_df[
-                (members_df["sido"] == map_sido)
-                & (
-                    members_df["gungu"].str.contains(map_gungu, na=False, regex=False)
-                    | members_df["orig_nm"].str.contains(map_gungu, na=False, regex=False)
-                )
-            ]
-            if gungu_members.empty:
-                st.info(f"{map_gungu} 지역 의원 정보가 없습니다.")
-            else:
-                cols = st.columns(min(3, len(gungu_members)))
-                for i, (_, m) in enumerate(gungu_members.iterrows()):
-                    with cols[i % 3]:
-                        if render_member_card(m, on_click_key=f"mc_gu_{i}"):
-                            st.session_state["selected_proposer_member"] = m["name"]
-                            st.rerun()
+                header = f"**{map_sido}{'  ·  ' + map_gungu if map_gungu else '  전체'}  —  {len(display_members)}명**"
+                st.markdown(header)
+                with st.container(height=520):
+                    for i, (_, m) in enumerate(display_members.reset_index(drop=True).iterrows()):
+                        party_color = PARTY_COLORS.get(m.get("party", ""), "#888888")
+                        c_info, c_btn = st.columns([5, 1])
+                        with c_info:
+                            st.markdown(
+                                f"**{m['name']}** "
+                                f"<span style='background:{party_color};color:white;"
+                                f"padding:1px 6px;border-radius:3px;font-size:0.75em'>"
+                                f"{m.get('party','')}</span>"
+                                f"<br><small style='color:#666'>{m.get('orig_nm','')} "
+                                f"| {m.get('cmit_nm','')}</small>",
+                                unsafe_allow_html=True,
+                            )
+                        with c_btn:
+                            if st.button("법안", key=f"mc_{map_sido}_{i}", use_container_width=True):
+                                st.session_state["selected_proposer_member"] = m["name"]
+                                st.rerun()
 
     # ── 이름 검색 탭 ─────────────────────────────────────────
     with tab_name:
-        # 의원 이름 목록 (members_df 기준 — bills proposer 중복/복합 이름 방지)
         if not members_df.empty:
             name_list = sorted(members_df["name"].dropna().unique().tolist())
         else:
@@ -624,9 +561,7 @@ def page_member_bills():
                         st.rerun()
         else:
             sel = st.selectbox(
-                "또는 목록에서 선택",
-                ["선택하세요"] + name_list,
-                key="name_full",
+                "또는 목록에서 선택", ["선택하세요"] + name_list, key="name_full"
             )
             if sel != "선택하세요":
                 if st.button(f"{sel} 법안 보기", key="name_full_btn"):
