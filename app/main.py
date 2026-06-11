@@ -617,7 +617,9 @@ def page_stats():
     def _resolve_party(proposer: str) -> str:
         if not proposer:
             return "기타"
-        m = re.match(r"([가-힣]{2,5})", str(proposer))
+        # "김희정의원 등 10인" -> "김희정"
+        s = re.sub(r"의원.*", "", str(proposer))
+        m = re.match(r"([가-힣]{2,4})", s)
         name = m.group(1) if m else ""
         return name_to_party.get(name, "기타")
     party_series = df["proposer"].apply(_resolve_party)
