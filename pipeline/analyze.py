@@ -203,4 +203,4 @@ def analyze_pending(batch_size: int = 30):
 
 
 if __name__ == "__main__":
-    analyze_pending(batch_size=10)
+    analyze_pending(batch_size=50)
