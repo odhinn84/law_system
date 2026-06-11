@@ -24,8 +24,45 @@ client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
 
 
 # ── 분류 체계 ────────────────────────────────────────────
-# 직업군: LLM이 법안 내용 기반으로 자유롭게 도출
-# (추후 국가 직업 분류 체계 도입 시 이 위치에 상수 정의)
+# 직업군: 한국표준직업분류(KSCO) 8차 중분류
+KSCO_GROUPS = {
+    "관리자": [
+        "공공·기업 고위직", "행정·경영지원 관리직", "전문서비스 관리직",
+        "건설·생산 관련 관리직", "판매·고객서비스 관리직",
+    ],
+    "전문가 및 관련 종사자": [
+        "과학 전문가 및 관련직", "정보통신 전문가 및 기술직", "공학 전문가 및 기술직",
+        "보건 전문가 및 관련직", "사회복지·종교 전문가 및 관련직", "교육 전문가 및 관련직",
+        "법률·행정 전문직", "경영·금융 전문가 및 관련직", "문화·예술·스포츠 전문가 및 관련직",
+    ],
+    "사무 종사자": [
+        "경영·회계 관련 사무직", "금융 사무직", "법률·감사 사무직", "기타 사무직",
+    ],
+    "서비스 종사자": [
+        "경찰·소방·보안 서비스직", "돌봄·보건 서비스직", "미용·예식 서비스직",
+        "운송·여가 서비스직", "조리·음식 서비스직",
+    ],
+    "판매 종사자": ["영업직", "판매직"],
+    "농림어업 숙련 종사자": ["농업 숙련직", "임업 숙련직", "어업 숙련직"],
+    "기능원 및 관련 기능 종사자": [
+        "건설·광업 관련 기능직", "금속 성형 관련 기능직", "운송·기계 관련 기능직",
+        "전기·전자 관련 기능직", "정보통신·방송장비 관련 기능직", "식품가공 관련 기능직",
+        "섬유·의복·가죽 관련 기능직", "목재·가구·악기 관련 기능직", "기타 기능직",
+    ],
+    "장치·기계 조작 및 조립 종사자": [
+        "식품가공 장치·기계 조작직", "섬유·신발 장치·기계 조작직", "화학 관련 장치·기계 조작직",
+        "금속·비금속 장치·기계 조작직", "기계 제조 장치·기계 조작직", "전기·전자 장치·기계 조작직",
+        "운전·운송 관련직", "상하수도·재활용 처리직", "기타 장치·기계 조작직",
+    ],
+    "단순 노무 종사자": [
+        "건설·광업 단순 노무직", "운송 관련 단순 노무직", "제조 관련 단순 노무직",
+        "청소·경비 단순 노무직", "가사·음식·판매 단순 노무직", "농림어업·기타 단순 노무직",
+    ],
+    "군인": ["군인"],
+}
+# 중분류 평탄화 목록 (LLM 프롬프트용)
+KSCO_OCC_LIST = [occ for occs in KSCO_GROUPS.values() for occ in occs]
+
 AGE_LIST = ["아동(0~12)", "청소년(13~18)", "청년(19~34)", "중장년(35~59)", "노년(60+)"]
 SOCIAL_LIST = [
     "취약계층", "장애인", "여성", "다문화가정", "1인가구",
@@ -48,18 +85,17 @@ ANALYSIS_PROMPT = """당신은 대한민국 법안을 시민 친화적으로 분
   "core_change": "기존과 달라지는 핵심 내용 (1~2문장)",
   "impact_direction": "positive 또는 negative 또는 mixed 또는 neutral",
   "impact_detail": "어떤 면에서 긍정/부정인지 간략히 (1문장)",
-  "affected_occupations": ["법안과 직접 관련된 직업군을 자유롭게 명시, 예: 의사, 간호사, 건설업자 등. 해당 없으면 []"],
+  "affected_occupations": {occ_list},
   "affected_ages": {age_list},
   "affected_social": {social_list},
   "affected_regions": {region_list},
-  "keywords": ["키워드1", "키워드2", "키워드3"],
-  "urgency": "high 또는 medium 또는 low"
+  "keywords": ["키워드1", "키워드2", "키워드3"]
 }}
 
 주의:
-- affected_occupations는 법안 내용 기반으로 자유롭게 작성 (구체적 직업명 사용)
-- affected_age/social/region은 위 제시 목록에서만 선택, 해당 없으면 빈 배열 []
-- urgency는 시민 일상생활 영향도 기준
+- affected_occupations는 위 한국표준직업분류(KSCO) 목록에서만 선택, 해당 없으면 []
+- affected_ages/social/regions도 위 제시 목록에서만 선택, 해당 없으면 []
+- impact_direction: 법안이 영향받는 집단 전반에 미치는 효과 기준
 - JSON 외 다른 텍스트 출력 금지"""
 
 
@@ -67,6 +103,7 @@ def build_prompt(bill: dict) -> str:
     return ANALYSIS_PROMPT.format(
         title=bill["title"],
         summary=bill["summary"][:3000],  # 토큰 절약
+        occ_list=json.dumps(KSCO_OCC_LIST, ensure_ascii=False),
         age_list=json.dumps(AGE_LIST, ensure_ascii=False),
         social_list=json.dumps(SOCIAL_LIST, ensure_ascii=False),
         region_list=json.dumps(REGION_LIST, ensure_ascii=False),
@@ -129,7 +166,7 @@ def save_analysis(bill_id: str, result: dict, failed: bool = False):
         join(result.get("affected_social", [])),
         join(result.get("affected_regions", [])),
         join(result.get("keywords", [])),
-        result.get("urgency", "low"),
+        "",  # urgency 제거 — 컬럼은 유지(스키마 호환), 값은 미사용
         datetime.now().isoformat(),
         1 if failed else 0,
     ))
