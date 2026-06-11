@@ -1,6 +1,7 @@
 """
 Streamlit 앱 메인 진입점
 GitHub raw URL에서 CSV를 읽어 표시
+Streamlit >= 1.36 필요 (st.navigation)
 """
 import streamlit as st
 
@@ -12,17 +13,58 @@ st.set_page_config(
 )
 
 import pandas as pd
-import json
 import requests
 from datetime import datetime
 
 # ── 설정 ────────────────────────────────────────────────
-# Streamlit Cloud secrets 또는 환경변수로 주입
 GITHUB_USER = st.secrets.get("GITHUB_USER", "your_username")
 GITHUB_REPO = st.secrets.get("GITHUB_REPO", "your_repo")
 BRANCH = "main"
-
 BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{BRANCH}/data"
+
+# ── KSCO 직업 분류 ───────────────────────────────────────
+KSCO_GROUPS = {
+    "관리자": [
+        "공공·기업 고위직", "행정·경영지원 관리직", "전문서비스 관리직",
+        "건설·생산 관련 관리직", "판매·고객서비스 관리직",
+    ],
+    "전문가 및 관련 종사자": [
+        "과학 전문가 및 관련직", "정보통신 전문가 및 기술직", "공학 전문가 및 기술직",
+        "보건 전문가 및 관련직", "사회복지·종교 전문가 및 관련직", "교육 전문가 및 관련직",
+        "법률·행정 전문직", "경영·금융 전문가 및 관련직", "문화·예술·스포츠 전문가 및 관련직",
+    ],
+    "사무 종사자": [
+        "경영·회계 관련 사무직", "금융 사무직", "법률·감사 사무직", "기타 사무직",
+    ],
+    "서비스 종사자": [
+        "경찰·소방·보안 서비스직", "돌봄·보건 서비스직", "미용·예식 서비스직",
+        "운송·여가 서비스직", "조리·음식 서비스직",
+    ],
+    "판매 종사자": ["영업직", "판매직"],
+    "농림어업 숙련 종사자": ["농업 숙련직", "임업 숙련직", "어업 숙련직"],
+    "기능원 및 관련 기능 종사자": [
+        "건설·광업 관련 기능직", "금속 성형 관련 기능직", "운송·기계 관련 기능직",
+        "전기·전자 관련 기능직", "정보통신·방송장비 관련 기능직", "식품가공 관련 기능직",
+        "섬유·의복·가죽 관련 기능직", "목재·가구·악기 관련 기능직", "기타 기능직",
+    ],
+    "장치·기계 조작 및 조립 종사자": [
+        "식품가공 장치·기계 조작직", "섬유·신발 장치·기계 조작직", "화학 관련 장치·기계 조작직",
+        "금속·비금속 장치·기계 조작직", "기계 제조 장치·기계 조작직", "전기·전자 장치·기계 조작직",
+        "운전·운송 관련직", "상하수도·재활용 처리직", "기타 장치·기계 조작직",
+    ],
+    "단순 노무 종사자": [
+        "건설·광업 단순 노무직", "운송 관련 단순 노무직", "제조 관련 단순 노무직",
+        "청소·경비 단순 노무직", "가사·음식·판매 단순 노무직", "농림어업·기타 단순 노무직",
+    ],
+    "군인": ["군인"],
+}
+
+IMPACT_EMOJI = {
+    "positive": "🟢 긍정",
+    "negative": "🔴 부정",
+    "mixed": "🟡 혼재",
+    "neutral": "⚪ 중립",
+}
 
 
 # ── 데이터 로딩 ──────────────────────────────────────────
@@ -30,7 +72,6 @@ BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{BRAN
 def load_bills() -> pd.DataFrame:
     url = f"{BASE_URL}/bills.csv"
     df = pd.read_csv(url, encoding="utf-8-sig")
-    # 영향 집단 필드를 리스트로 파싱
     for col in ["affected_occ", "affected_age", "affected_social", "affected_region", "keywords"]:
         df[col] = df[col].fillna("").apply(lambda x: x.split("|") if x else [])
     return df
@@ -47,20 +88,7 @@ def load_meta() -> dict:
 
 
 # ── 공통 컴포넌트 ────────────────────────────────────────
-IMPACT_EMOJI = {
-    "positive": "🟢 긍정",
-    "negative": "🔴 부정",
-    "mixed": "🟡 혼재",
-    "neutral": "⚪ 중립",
-}
-URGENCY_EMOJI = {
-    "high": "🔥 높음",
-    "medium": "📌 중간",
-    "low": "💤 낮음",
-}
-
-
-def render_bill_card(row):
+def render_bill_card(row, show_impact: bool = False):
     with st.container(border=True):
         col1, col2 = st.columns([5, 1])
         with col1:
@@ -71,188 +99,131 @@ def render_bill_card(row):
                 f"👤 {row['proposer']} ({row['party']})"
             )
             st.write(row["summary"] or "요약 없음")
-
-            # 영향 집단 태그
-            tags = (
-                list(row["affected_occ"]) +
-                list(row["affected_age"]) +
-                list(row["affected_social"])
-            )
+            tags = list(row["affected_occ"]) + list(row["affected_age"]) + list(row["affected_social"])
             if tags:
                 st.markdown(" ".join(f"`{t}`" for t in tags if t))
-
         with col2:
-            st.markdown(IMPACT_EMOJI.get(row["impact_direction"], ""))
-            st.markdown(URGENCY_EMOJI.get(row["urgency"], ""))
+            if show_impact:
+                impact = IMPACT_EMOJI.get(row.get("impact_direction", ""), "")
+                if impact:
+                    st.markdown(impact)
+                detail = row.get("impact_detail", "")
+                if detail:
+                    st.caption(detail)
             st.markdown(f"[원문 보기]({row['link']})")
 
 
-# ── 사이드바 ─────────────────────────────────────────────
-def render_sidebar(df: pd.DataFrame):
-    st.sidebar.title("⚖️ 국회 법안 분석")
-
+def sidebar_meta(df: pd.DataFrame):
     meta = load_meta()
     if meta.get("updated_at"):
         dt = datetime.fromisoformat(meta["updated_at"])
         st.sidebar.caption(f"최종 갱신: {dt.strftime('%Y-%m-%d %H:%M')}")
-
-    st.sidebar.markdown("---")
-    page = st.sidebar.radio(
-        "페이지",
-        ["🏠 홈", "🔍 법안 검색", "👤 나에게 관련된 법안", "🗺️ 의원별 법안", "📊 통계"],
-    )
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(f"총 법안 수: **{len(df):,}건**")
-
-    return page
+    st.sidebar.caption(f"총 법안: **{len(df):,}건**")
 
 
-# ── 각 페이지 ────────────────────────────────────────────
-def page_home(df: pd.DataFrame):
+# ── 페이지 함수 ──────────────────────────────────────────
+def page_home():
+    df = load_bills()
+    sidebar_meta(df)
+
     st.title("🏠 최근 법안 현황")
-    meta = load_meta()
-
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     col1.metric("전체 법안", f"{len(df):,}건")
-    col2.metric("긴급도 높음", f"{(df['urgency']=='high').sum():,}건")
-    col3.metric("긍정 법안", f"{(df['impact_direction']=='positive').sum():,}건")
-    col4.metric("부정 법안", f"{(df['impact_direction']=='negative').sum():,}건")
+    col2.metric("처리 완료", f"{df['status'].isin(['가결','부결','대안반영폐기','철회']).sum():,}건")
+    col3.metric("심사 중", f"{(~df['status'].isin(['가결','부결','대안반영폐기','철회'])).sum():,}건")
 
     st.markdown("---")
     st.subheader("최근 발의 법안 (상위 10건)")
-    recent = df.head(10)
-    for _, row in recent.iterrows():
+    for _, row in df.head(10).iterrows():
         render_bill_card(row)
 
 
-def page_search(df: pd.DataFrame):
-    st.title("🔍 법안 검색")
+def page_search():
+    df = load_bills()
+    sidebar_meta(df)
 
-    col1, col2, col3 = st.columns(3)
+    st.title("🔍 법안 검색")
+    col1, col2 = st.columns(2)
     keyword = col1.text_input("키워드 검색", placeholder="예: 의료, 청년, 부동산")
     status_filter = col2.multiselect("처리상태", df["status"].dropna().unique().tolist())
-    impact_filter = col3.multiselect(
-        "영향 방향",
-        ["positive", "negative", "mixed", "neutral"],
-        format_func=lambda x: IMPACT_EMOJI.get(x, x),
-    )
 
     filtered = df.copy()
     if keyword:
-        mask = (
-            df["title"].str.contains(keyword, na=False) |
-            df["summary"].str.contains(keyword, na=False)
-        )
-        filtered = filtered[mask]
+        filtered = filtered[
+            filtered["title"].str.contains(keyword, na=False) |
+            filtered["summary"].str.contains(keyword, na=False)
+        ]
     if status_filter:
         filtered = filtered[filtered["status"].isin(status_filter)]
-    if impact_filter:
-        filtered = filtered[filtered["impact_direction"].isin(impact_filter)]
 
     st.caption(f"{len(filtered):,}건 검색됨")
     for _, row in filtered.head(30).iterrows():
         render_bill_card(row)
 
 
-def page_my_bills(df: pd.DataFrame):
-    st.title("👤 나에게 관련된 법안")
-    st.caption("직업·연령·지역을 선택하면 관련 법안을 보여줍니다.")
+def page_my_bills():
+    df = load_bills()
+    sidebar_meta(df)
 
-    all_occ = sorted({t for lst in df["affected_occ"] for t in lst if t})
-    all_age = sorted({t for lst in df["affected_age"] for t in lst if t})
-    all_social = sorted({t for lst in df["affected_social"] for t in lst if t})
-    all_region = sorted({t for lst in df["affected_region"] for t in lst if t})
+    st.title("👤 나에게 관련된 법안")
+    st.caption("직업·연령·지역을 선택하면 관련 법안과 영향 방향을 보여줍니다.")
 
     col1, col2 = st.columns(2)
-    sel_occ = col1.multiselect("직업군", all_occ)
-    sel_age = col1.multiselect("연령대", all_age)
-    sel_social = col2.multiselect("사회적 집단", all_social)
-    sel_region = col2.multiselect("지역", all_region)
+    with col1:
+        major_occ = st.selectbox("직업 대분류 (KSCO)", ["선택 안함"] + list(KSCO_GROUPS.keys()))
+        sel_occ = st.multiselect("직업 중분류", KSCO_GROUPS[major_occ] if major_occ != "선택 안함" else [])
+        sel_age = st.multiselect(
+            "연령대",
+            ["아동(0~12)", "청소년(13~18)", "청년(19~34)", "중장년(35~59)", "노년(60+)"],
+        )
+    with col2:
+        all_social = sorted({t for lst in df["affected_social"] for t in lst if t})
+        sel_social = st.multiselect("사회적 집단", all_social)
+        all_region = sorted({t for lst in df["affected_region"] for t in lst if t})
+        sel_region = st.multiselect("지역", all_region)
+
     sel_impact = st.multiselect(
         "영향 방향 필터",
         ["positive", "negative", "mixed", "neutral"],
         format_func=lambda x: IMPACT_EMOJI.get(x, x),
     )
 
-    selections = {
-        "affected_occ": sel_occ,
-        "affected_age": sel_age,
-        "affected_social": sel_social,
-        "affected_region": sel_region,
-    }
-
     filtered = df.copy()
-    for col, sel in selections.items():
+    for col, sel in [("affected_occ", sel_occ), ("affected_age", sel_age),
+                     ("affected_social", sel_social), ("affected_region", sel_region)]:
         if sel:
-            filtered = filtered[
-                filtered[col].apply(lambda lst: any(s in lst for s in sel))
-            ]
+            filtered = filtered[filtered[col].apply(lambda lst: any(s in lst for s in sel))]
     if sel_impact:
         filtered = filtered[filtered["impact_direction"].isin(sel_impact)]
-
-    # 긴급도 높은 것 먼저
-    urgency_order = {"high": 0, "medium": 1, "low": 2}
-    filtered = filtered.sort_values("urgency", key=lambda s: s.map(urgency_order))
+    filtered = filtered.sort_values("propose_date", ascending=False)
 
     st.caption(f"{len(filtered):,}건 해당")
     if filtered.empty:
         st.info("조건에 맞는 법안이 없습니다. 항목을 선택해 주세요.")
     for _, row in filtered.head(30).iterrows():
-        render_bill_card(row)
+        render_bill_card(row, show_impact=True)
 
 
+def page_member_bills():
+    df = load_bills()
+    sidebar_meta(df)
 
-def page_member_bills(df: pd.DataFrame):
     st.title("🗺️ 의원별 발의 법안")
     st.caption("의원을 검색하면 발의하거나 참여한 법안을 볼 수 있습니다.")
 
     tab_map, tab_name = st.tabs(["🗺️ 지역구 지도로 찾기", "🔎 이름으로 바로 찾기"])
-
     selected_proposer = None
 
-    # ── 탭1: 지역구 지도 검색 ──────────────────────────────
     with tab_map:
-        st.markdown("#### 지역구 선택")
-
-        # 시도 → 시군구 → 지역구 순차 선택
-        # 의원 데이터는 bills CSV의 proposer/party 컬럼 기반
-        # 실제 지역구 데이터는 국회 의원 API에서 추가 수집 필요
-        # 현재는 시도/시군구 selectbox + SVG 지도 안내로 구현
-
-        SIDO_LIST = [
-            "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
-            "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
-        ]
-
-        col1, col2 = st.columns(2)
-        sido = col1.selectbox("시·도 선택", ["선택하세요"] + SIDO_LIST)
-
+        SIDO_LIST = ["서울","부산","대구","인천","광주","대전","울산","세종",
+                     "경기","강원","충북","충남","전북","전남","경북","경남","제주"]
+        sido = st.selectbox("시·도 선택", ["선택하세요"] + SIDO_LIST)
         if sido != "선택하세요":
-            # bills CSV에서 해당 지역 관련 의원 추출 (지역구 데이터 추가 전 임시)
-            # 추후 의원 API 데이터(DISTRICT 필드)와 연동
-            st.info(
-                f"💡 **{sido}** 지역구 의원 지도는 의원 정보 API 연동 후 활성화됩니다. "
-                "현재는 아래 이름 검색 탭을 이용해 주세요."
-            )
+            st.info(f"💡 **{sido}** 지역구 의원 지도는 의원 정보 API 연동 후 활성화됩니다. 이름 검색 탭을 이용해 주세요.")
 
-            # 지도 플레이스홀더 — folium + 선거구 GeoJSON 연동 시 교체
-            st.markdown("""
-            > **지도 연동 계획**
-            > - 데이터: 중앙선거관리위원회 선거구 GeoJSON
-            > - 라이브러리: `streamlit-folium`
-            > - 클릭 시 해당 지역구 의원 자동 선택
-            """)
-
-    # ── 탭2: 이름 검색 ─────────────────────────────────────
     with tab_name:
-        st.markdown("#### 의원 이름 검색")
-
-        # bills CSV에서 의원 목록 추출
         all_proposers = sorted(df["proposer"].dropna().unique().tolist())
-
         name_query = st.text_input("의원 이름 입력", placeholder="예: 홍길동")
-
         if name_query:
             matched = [p for p in all_proposers if name_query in p]
             if not matched:
@@ -262,63 +233,35 @@ def page_member_bills(df: pd.DataFrame):
             else:
                 selected_proposer = st.selectbox("의원 선택", matched)
         else:
-            selected_proposer = st.selectbox(
-                "또는 목록에서 선택", ["선택하세요"] + all_proposers
-            )
-            if selected_proposer == "선택하세요":
-                selected_proposer = None
+            sel = st.selectbox("또는 목록에서 선택", ["선택하세요"] + all_proposers)
+            if sel != "선택하세요":
+                selected_proposer = sel
 
-    # ── 선택된 의원의 법안 표시 ────────────────────────────
     if selected_proposer:
         st.markdown("---")
         st.subheader(f"📋 {selected_proposer} 의원 발의/참여 법안")
-
-        # 대표발의자 또는 공동발의자(proposer 필드에 포함) 검색
         member_bills = df[df["proposer"].str.contains(selected_proposer, na=False)]
-
         if member_bills.empty:
             st.info("해당 의원의 법안이 없습니다.")
         else:
-            # 요약 통계
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             col1.metric("총 법안 수", f"{len(member_bills)}건")
-            col2.metric(
-                "긍정 법안",
-                f"{(member_bills['impact_direction']=='positive').sum()}건"
-            )
-            col3.metric(
-                "긴급도 높음",
-                f"{(member_bills['urgency']=='high').sum()}건"
-            )
-
-            # 정렬
-            sort_opt = st.selectbox(
-                "정렬",
-                ["최신순", "긴급도 높은순", "긍정 영향순"],
-                key="member_sort"
-            )
+            col2.metric("처리 완료", f"{member_bills['status'].isin(['가결','부결','대안반영폐기','철회']).sum()}건")
+            sort_opt = st.selectbox("정렬", ["최신순", "처리상태순"], key="member_sort")
             if sort_opt == "최신순":
                 member_bills = member_bills.sort_values("propose_date", ascending=False)
-            elif sort_opt == "긴급도 높은순":
-                urgency_order = {"high": 0, "medium": 1, "low": 2}
-                member_bills = member_bills.sort_values(
-                    "urgency", key=lambda s: s.map(urgency_order)
-                )
-            elif sort_opt == "긍정 영향순":
-                impact_order = {"positive": 0, "mixed": 1, "neutral": 2, "negative": 3}
-                member_bills = member_bills.sort_values(
-                    "impact_direction", key=lambda s: s.map(impact_order)
-                )
-
+            else:
+                member_bills = member_bills.sort_values("status")
             for _, row in member_bills.head(30).iterrows():
                 render_bill_card(row)
 
 
-def page_stats(df: pd.DataFrame):
+def page_stats():
     import plotly.express as px
+    df = load_bills()
+    sidebar_meta(df)
 
     st.title("📊 통계")
-
     col1, col2 = st.columns(2)
 
     with col1:
@@ -336,7 +279,7 @@ def page_stats(df: pd.DataFrame):
         fig2 = px.pie(impact_cnt, names="방향", values="건수")
         st.plotly_chart(fig2, use_container_width=True)
 
-    st.subheader("직업군별 영향 법안 수")
+    st.subheader("직업군별 영향 법안 수 (KSCO 중분류)")
     occ_counts = {}
     for lst in df["affected_occ"]:
         for item in lst:
@@ -355,26 +298,90 @@ def page_stats(df: pd.DataFrame):
     st.plotly_chart(fig4, use_container_width=True)
 
 
+def page_about():
+    st.title("ℹ️ 서비스 소개")
+
+    st.markdown("""
+    ## 국회 법안 분석 시스템이란?
+
+    국회에서 발의되는 수천 건의 법안을 일반 시민이 쉽게 파악하기 어렵다는 문제 의식에서 출발했습니다.
+    이 서비스는 법안의 핵심 내용을 쉬운 언어로 요약하고, 어떤 직업군·연령대·사회 집단에
+    영향을 미치는지 자동으로 분류하여 제공합니다.
+    """)
+
+    st.markdown("---")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 📡 데이터 출처")
+        st.markdown("""
+        - **법안 목록**: 열린국회정보 Open API (`nzmimeepazxkubdpn`)
+        - **제안이유·주요내용**: 열린국회정보 Open API (`BPMBILLSUMMARY`)
+        - **원문 링크**: 의안정보시스템 (`likms.assembly.go.kr`)
+        - **수집 대상**: 제22대 국회 발의 법안 전체
+        - **갱신 주기**: 매일 새벽 3시 자동 업데이트
+        """)
+
+        st.markdown("### 🗂️ 직업 분류 기준")
+        st.markdown("""
+        직업군 분류는 통계청의 **한국표준직업분류(KSCO) 8차 개정** 중분류 체계를 따릅니다.
+        자의적인 분류 대신 국가 공식 기준을 사용하여 일관성을 높였습니다.
+        """)
+
+    with col2:
+        st.markdown("### 🤖 분석 방법")
+        st.markdown("""
+        법안의 제안이유 및 주요내용 텍스트를 LLM(대형 언어 모델)에 입력하여 다음 항목을 자동 생성합니다.
+
+        - **요약**: 시민이 이해할 수 있는 200자 이내 요약
+        - **핵심 변경사항**: 기존 법과 달라지는 점
+        - **영향 집단**: 직업군 / 연령대 / 사회적 집단 / 지역
+        - **영향 방향**: 긍정 / 부정 / 혼재 / 중립
+        """)
+
+        st.markdown("### ⚙️ 사용 모델")
+        st.markdown("""
+        | 항목 | 내용 |
+        |------|------|
+        | 모델 | Google Gemma 3 (27B) |
+        | 실행 방식 | 로컬 서버 (Ollama) |
+        | API | OpenAI 호환 API |
+        | 처리 속도 | 법안 1건 약 1분 |
+        """)
+
+    st.markdown("---")
+    st.markdown("### ⚠️ 이용 시 유의사항")
+    st.info("""
+    - 법안 요약과 집단 분류는 LLM이 자동 생성한 결과로, **오류가 포함될 수 있습니다.**
+    - 중요한 판단은 반드시 **원문 법안**을 직접 확인하시기 바랍니다.
+    - 법안 분석은 최신 법안부터 순차 처리되므로, 오래된 법안은 분석이 누락될 수 있습니다.
+    - 본 서비스는 법률 자문을 제공하지 않습니다.
+    """)
+
+    st.markdown("---")
+    st.caption("데이터 출처: 열린국회정보 (open.assembly.go.kr) | 직업 분류: 통계청 한국표준직업분류 8차")
+
+
 # ── 앱 실행 ──────────────────────────────────────────────
 def main():
     try:
-        df = load_bills()
+        # st.navigation에서 각 페이지 함수가 직접 load_bills()를 호출하므로
+        # 에러 처리는 각 페이지 내에서 수행
+        pass
     except Exception as e:
-        st.error(f"데이터 로딩 실패: {e}")
+        st.error(f"초기화 오류: {e}")
         st.stop()
 
-    page = render_sidebar(df)
-
-    if page == "🏠 홈":
-        page_home(df)
-    elif page == "🔍 법안 검색":
-        page_search(df)
-    elif page == "👤 나에게 관련된 법안":
-        page_my_bills(df)
-    elif page == "🗺️ 의원별 법안":
-        page_member_bills(df)
-    elif page == "📊 통계":
-        page_stats(df)
+    pg = st.navigation([
+        st.Page(page_home,         title="홈",              icon="🏠", default=True),
+        st.Page(page_search,       title="법안 검색",        icon="🔍"),
+        st.Page(page_my_bills,     title="나에게 관련된 법안", icon="👤"),
+        st.Page(page_member_bills, title="의원별 법안",       icon="🗺️"),
+        st.Page(page_stats,        title="통계",             icon="📊"),
+        st.Page(page_about,        title="서비스 소개",       icon="ℹ️"),
+    ])
+    pg.run()
 
 
 if __name__ == "__main__":
