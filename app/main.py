@@ -17,8 +17,12 @@ import requests
 from datetime import datetime
 
 # ── 설정 ────────────────────────────────────────────────
-GITHUB_USER = st.secrets.get("GITHUB_USER", "your_username")
-GITHUB_REPO = st.secrets.get("GITHUB_REPO", "your_repo")
+try:
+    GITHUB_USER = st.secrets.get("GITHUB_USER", "odhinn84")
+    GITHUB_REPO = st.secrets.get("GITHUB_REPO", "law_system")
+except Exception:
+    GITHUB_USER = "odhinn84"
+    GITHUB_REPO = "law_system"
 BRANCH = "main"
 BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{BRANCH}/data"
 
