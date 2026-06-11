@@ -218,7 +218,7 @@ def page_my_bills():
         render_bill_card(row, show_impact=True)
 
 
-# 시도 좌표 (지도 마커용)
+# 시도 좌표 (selectbox 폴백용)
 SIDO_COORDS = {
     "서울": (37.5665, 126.9780), "부산": (35.1796, 129.0756),
     "대구": (35.8714, 128.6014), "인천": (37.4563, 126.7052),
@@ -229,6 +229,26 @@ SIDO_COORDS = {
     "전북": (35.7175, 127.1530), "전남": (34.8161, 126.4630),
     "경북": (36.4919, 128.8889), "경남": (35.4606, 128.2132),
     "제주": (33.4996, 126.5312),
+}
+
+# GeoJSON 시도 전체명 -> 단축명
+SIDO_FULL_TO_SHORT = {
+    "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구",
+    "인천광역시": "인천", "광주광역시": "광주", "대전광역시": "대전",
+    "울산광역시": "울산", "세종특별자치시": "세종",
+    "경기도": "경기", "강원도": "강원", "강원특별자치도": "강원",
+    "충청북도": "충북", "충청남도": "충남",
+    "전라북도": "전북", "전북특별자치도": "전북",
+    "전라남도": "전남", "경상북도": "경북",
+    "경상남도": "경남", "제주특별자치도": "제주",
+}
+
+# 시도별 행정구역 코드 (GeoJSON SIG_CD 앞 2자리 기준)
+SIDO_CODE = {
+    "서울": "11", "부산": "26", "대구": "27", "인천": "28",
+    "광주": "29", "대전": "30", "울산": "31", "세종": "36",
+    "경기": "41", "강원": "42", "충북": "43", "충남": "44",
+    "전북": "45", "전남": "46", "경북": "47", "경남": "48", "제주": "50",
 }
 
 PARTY_COLORS = {
@@ -249,8 +269,37 @@ def parse_sido(orig_nm: str) -> str:
     return orig_nm.split()[0]
 
 
+def parse_gungu(orig_nm: str) -> str:
+    """'서울 강남구갑' -> '강남구'"""
+    import re
+    if not orig_nm or orig_nm == "비례대표":
+        return ""
+    parts = orig_nm.split()
+    if len(parts) < 2:
+        return ""
+    return re.sub(r"[갑을병정]$", "", parts[1])
+
+
+@st.cache_data(ttl=86400)
+def load_korea_geojson():
+    """한국 시도/시군구 GeoJSON 로드 (southkorea-maps 2018)"""
+    base = (
+        "https://raw.githubusercontent.com/southkorea/"
+        "southkorea-maps/master/kostat/2018/json"
+    )
+    try:
+        prov = requests.get(
+            f"{base}/skorea-provinces-2018-geo.json", timeout=15
+        ).json()
+        muni = requests.get(
+            f"{base}/skorea-municipalities-2018-geo.json", timeout=15
+        ).json()
+        return prov, muni
+    except Exception:
+        return None, None
+
+
 def render_member_card(m: pd.Series, on_click_key: str = None):
-    """의원 카드 렌더링. 클릭 시 해당 의원 이름 반환"""
     party_color = PARTY_COLORS.get(m.get("party", ""), "#888888")
     with st.container(border=True):
         col1, col2 = st.columns([4, 1])
@@ -259,7 +308,7 @@ def render_member_card(m: pd.Series, on_click_key: str = None):
                 f"**{m['name']}** "
                 f"<span style='background:{party_color};color:white;padding:2px 8px;"
                 f"border-radius:4px;font-size:0.8em'>{m.get('party','')}</span>",
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
             district = m.get("orig_nm", "")
             cmit = m.get("cmit_nm", "")
@@ -267,15 +316,39 @@ def render_member_card(m: pd.Series, on_click_key: str = None):
             if info_parts:
                 st.caption(" | ".join(info_parts))
             if m.get("homepage"):
-                st.markdown(f"[🏠 홈페이지]({m['homepage']})", unsafe_allow_html=False)
+                st.markdown(f"[홈페이지]({m['homepage']})")
         with col2:
             if on_click_key:
                 return st.button("법안 보기", key=on_click_key, use_container_width=True)
     return False
 
 
+def _get_geo_name_key(features: list) -> str:
+    """GeoJSON feature properties에서 한국어 이름 키 자동 감지"""
+    if not features:
+        return "name"
+    props = features[0]["properties"]
+    for k in ("CTP_KOR_NM", "SIG_KOR_NM", "name", "NAME"):
+        if k in props:
+            return k
+    return list(props.keys())[0]
+
+
+def _match_gungu_to_geo(gungu: str, geo_names: list) -> str:
+    """의원 orig_nm 파싱 결과 -> GeoJSON 시군구명 매핑"""
+    if not gungu:
+        return ""
+    if gungu in geo_names:
+        return gungu
+    # 접미사 매칭: '수원시팔달구' -> '팔달구'
+    for gn in geo_names:
+        if len(gn) >= 2 and gungu.endswith(gn):
+            return gn
+    return ""
+
+
 def page_member_bills():
-    import plotly.graph_objects as go
+    import plotly.express as px
 
     df = load_bills()
     members_df = load_members()
@@ -283,85 +356,216 @@ def page_member_bills():
 
     st.title("🗺️ 의원별 발의 법안")
 
-    selected_proposer = st.session_state.get("selected_proposer_member", None)
-
     tab_map, tab_name = st.tabs(["🗺️ 지역구 지도로 찾기", "🔎 이름으로 바로 찾기"])
 
     with tab_map:
         if members_df.empty:
             st.warning("의원 데이터를 불러올 수 없습니다.")
         else:
+            members_df = members_df.copy()
             members_df["sido"] = members_df["orig_nm"].apply(parse_sido)
+            members_df["gungu"] = members_df["orig_nm"].apply(parse_gungu)
 
-            # 시도별 의원 수 집계
-            sido_counts = members_df[members_df["sido"] != "비례대표"]["sido"].value_counts().to_dict()
+            map_sido = st.session_state.get("map_sido")
+            map_gungu = st.session_state.get("map_gungu")
 
-            lats, lons, texts, sizes, sidos = [], [], [], [], []
-            for sido, (lat, lon) in SIDO_COORDS.items():
-                cnt = sido_counts.get(sido, 0)
-                lats.append(lat)
-                lons.append(lon)
-                texts.append(f"<b>{sido}</b><br>{cnt}명")
-                sizes.append(max(cnt * 1.5, 12))
-                sidos.append(sido)
-
-            fig = go.Figure(go.Scattergeo(
-                lat=lats, lon=lons,
-                text=texts,
-                hoverinfo="text",
-                mode="markers+text",
-                textposition="top center",
-                textfont=dict(size=11, color="black"),
-                marker=dict(
-                    size=sizes,
-                    color=[sido_counts.get(s, 0) for s in sidos],
-                    colorscale="Blues",
-                    showscale=True,
-                    colorbar=dict(title="의원 수"),
-                    line=dict(color="white", width=1),
-                ),
-                customdata=sidos,
-            ))
-            fig.update_layout(
-                geo=dict(
-                    scope="asia",
-                    center=dict(lat=36.5, lon=127.8),
-                    projection_scale=7,
-                    showland=True, landcolor="#f0f0f0",
-                    showocean=True, oceancolor="#d0e8f0",
-                    showcoastlines=True, coastlinecolor="gray",
-                    showframe=False,
-                ),
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=450,
-            )
-
-            event = st.plotly_chart(fig, on_select="rerun", key="sido_map", use_container_width=True)
-
-            # 지도 클릭 or selectbox
-            map_sido = None
-            if event and hasattr(event, "selection") and event.selection.points:
-                map_sido = event.selection.points[0].get("customdata")
-
-            sido_list = sorted(SIDO_COORDS.keys()) + ["비례대표"]
-            sel_sido = st.selectbox("또는 지역 직접 선택", ["선택하세요"] + sido_list, key="sido_select")
-            if sel_sido != "선택하세요":
-                map_sido = sel_sido
-
+            # 뒤로가기 네비게이션
             if map_sido:
-                st.markdown(f"#### 📍 {map_sido} 지역구 의원")
-                sido_members = members_df[members_df["sido"] == map_sido].reset_index(drop=True)
-                if sido_members.empty:
-                    st.info("해당 지역 의원 정보가 없습니다.")
+                nav1, nav2, _ = st.columns([1, 1, 6])
+                if nav1.button("◀ 전국"):
+                    st.session_state.pop("map_sido", None)
+                    st.session_state.pop("map_gungu", None)
+                    st.rerun()
+                if map_gungu and nav2.button(f"◀ {map_sido}"):
+                    st.session_state.pop("map_gungu", None)
+                    st.rerun()
+
+            # ── 레벨 1: 시도 choropleth ─────────────────────────────
+            if not map_sido:
+                prov_geo, _ = load_korea_geojson()
+
+                sido_counts = (
+                    members_df[members_df["sido"] != "비례대표"]
+                    .groupby("sido")
+                    .size()
+                    .reset_index(name="count")
+                )
+
+                if prov_geo:
+                    name_key = _get_geo_name_key(prov_geo["features"])
+                    short_to_full = {}
+                    for feat in prov_geo["features"]:
+                        full = feat["properties"].get(name_key, "")
+                        short = SIDO_FULL_TO_SHORT.get(full, full)
+                        short_to_full[short] = full
+
+                    sido_counts["sido_full"] = (
+                        sido_counts["sido"]
+                        .map(short_to_full)
+                        .fillna(sido_counts["sido"])
+                    )
+
+                    fig = px.choropleth(
+                        sido_counts,
+                        geojson=prov_geo,
+                        locations="sido_full",
+                        featureidkey=f"properties.{name_key}",
+                        color="count",
+                        color_continuous_scale="Blues",
+                        hover_name="sido",
+                        hover_data={"count": True, "sido_full": False},
+                        labels={"count": "의원 수"},
+                    )
+                    fig.update_geos(fitbounds="locations", visible=False)
+                    fig.update_layout(
+                        margin=dict(l=0, r=0, t=10, b=0),
+                        height=520,
+                        coloraxis_colorbar=dict(title="의원 수"),
+                    )
+                    st.caption("💡 시도를 클릭하면 해당 지역으로 확대됩니다")
+                    event = st.plotly_chart(
+                        fig, on_select="rerun", key="sido_choro", use_container_width=True
+                    )
+
+                    if event and hasattr(event, "selection") and event.selection.points:
+                        clicked_full = event.selection.points[0].get("location", "")
+                        clicked_short = SIDO_FULL_TO_SHORT.get(clicked_full, clicked_full)
+                        if clicked_short:
+                            st.session_state["map_sido"] = clicked_short
+                            st.session_state.pop("map_gungu", None)
+                            st.rerun()
                 else:
-                    cols = st.columns(3)
-                    for i, (_, m) in enumerate(sido_members.iterrows()):
+                    st.warning("지도 데이터를 불러오지 못했습니다. 하단 선택박스를 이용하세요.")
+
+                sel_sido = st.selectbox(
+                    "시도 직접 선택",
+                    ["선택하세요"] + sorted(SIDO_COORDS.keys()) + ["비례대표"],
+                    key="sido_sel",
+                )
+                if sel_sido != "선택하세요":
+                    st.session_state["map_sido"] = sel_sido
+                    st.session_state.pop("map_gungu", None)
+                    st.rerun()
+
+            # ── 레벨 2: 시군구 choropleth ────────────────────────────
+            elif not map_gungu:
+                sido_members = members_df[members_df["sido"] == map_sido]
+                st.markdown(f"**{map_sido}** — 지역구 의원 {len(sido_members)}명")
+
+                _, muni_geo = load_korea_geojson()
+                sido_code = SIDO_CODE.get(map_sido, "")
+
+                if muni_geo and sido_code:
+                    sido_feats = [
+                        f for f in muni_geo["features"]
+                        if str(f["properties"].get("SIG_CD", ""))[:2] == sido_code
+                    ]
+
+                    if sido_feats:
+                        filtered_geo = {"type": "FeatureCollection", "features": sido_feats}
+                        gname_key = _get_geo_name_key(sido_feats)
+                        geo_names = [f["properties"].get(gname_key, "") for f in sido_feats]
+
+                        sido_members = sido_members.copy()
+                        sido_members["gungu_geo"] = sido_members["gungu"].apply(
+                            lambda g: _match_gungu_to_geo(g, geo_names)
+                        )
+
+                        gungu_counts = (
+                            sido_members[sido_members["gungu_geo"] != ""]
+                            .groupby("gungu_geo")
+                            .size()
+                            .reset_index(name="count")
+                        )
+                        all_gungu_df = pd.DataFrame({"gungu_geo": geo_names})
+                        gungu_counts = all_gungu_df.merge(
+                            gungu_counts, on="gungu_geo", how="left"
+                        ).fillna(0)
+                        gungu_counts["count"] = gungu_counts["count"].astype(int)
+
+                        fig2 = px.choropleth(
+                            gungu_counts,
+                            geojson=filtered_geo,
+                            locations="gungu_geo",
+                            featureidkey=f"properties.{gname_key}",
+                            color="count",
+                            color_continuous_scale="Blues",
+                            hover_name="gungu_geo",
+                            hover_data={"count": True},
+                            labels={"count": "의원 수"},
+                        )
+                        fig2.update_geos(fitbounds="locations", visible=False)
+                        fig2.update_layout(
+                            margin=dict(l=0, r=0, t=10, b=0),
+                            height=480,
+                            coloraxis_colorbar=dict(title="의원 수"),
+                        )
+                        st.caption("💡 시군구를 클릭하면 해당 의원 목록을 확인합니다")
+                        event2 = st.plotly_chart(
+                            fig2, on_select="rerun", key="gungu_choro", use_container_width=True
+                        )
+
+                        if event2 and hasattr(event2, "selection") and event2.selection.points:
+                            clicked_gu = event2.selection.points[0].get("location", "")
+                            if clicked_gu:
+                                st.session_state["map_gungu"] = clicked_gu
+                                st.rerun()
+
+                        gu_list = sorted([g for g in geo_names if g])
+                        sel_gu = st.selectbox(
+                            "또는 시군구 직접 선택",
+                            ["선택하세요"] + gu_list,
+                            key="gungu_sel",
+                        )
+                        if sel_gu != "선택하세요":
+                            st.session_state["map_gungu"] = sel_gu
+                            st.rerun()
+                    else:
+                        st.info("이 지역의 시군구 데이터가 없습니다.")
+                else:
+                    st.warning("시군구 지도를 불러오지 못했습니다.")
+                    gu_list = sorted([g for g in sido_members["gungu"].unique() if g])
+                    sel_gu = st.selectbox(
+                        "시군구 선택",
+                        ["선택하세요"] + gu_list,
+                        key="gungu_sel_fb",
+                    )
+                    if sel_gu != "선택하세요":
+                        st.session_state["map_gungu"] = sel_gu
+                        st.rerun()
+
+                # 시도 전체 의원 미리보기
+                st.markdown("---")
+                st.markdown(f"**{map_sido} 전체 의원**")
+                cols = st.columns(3)
+                for i, (_, m) in enumerate(sido_members.iterrows()):
+                    with cols[i % 3]:
+                        if render_member_card(m, on_click_key=f"mc_sido_{i}"):
+                            st.session_state["selected_proposer_member"] = m["name"]
+                            st.rerun()
+
+            # ── 레벨 3: 시군구 의원 목록 ────────────────────────────
+            else:
+                st.markdown(f"**{map_sido} · {map_gungu}**")
+                gungu_members = members_df[
+                    (members_df["sido"] == map_sido)
+                    & (
+                        members_df["gungu"].str.contains(map_gungu, na=False)
+                        | members_df["orig_nm"].str.contains(map_gungu, na=False)
+                    )
+                ]
+
+                if gungu_members.empty:
+                    st.info(f"{map_gungu} 지역 의원 정보가 없습니다.")
+                else:
+                    cols = st.columns(min(3, len(gungu_members)))
+                    for i, (_, m) in enumerate(gungu_members.iterrows()):
                         with cols[i % 3]:
-                            clicked = render_member_card(m, on_click_key=f"mc_{map_sido}_{i}")
-                            if clicked:
+                            if render_member_card(m, on_click_key=f"mc_gu_{i}"):
                                 st.session_state["selected_proposer_member"] = m["name"]
                                 st.rerun()
 
+    # ── 이름 검색 탭 ─────────────────────────────────────────
     with tab_name:
         all_proposers = sorted(df["proposer"].dropna().unique().tolist())
         name_query = st.text_input("의원 이름 입력", placeholder="예: 홍길동", key="name_search")
@@ -380,13 +584,15 @@ def page_member_bills():
                         st.session_state["selected_proposer_member"] = sel
                         st.rerun()
         else:
-            sel = st.selectbox("또는 목록에서 선택", ["선택하세요"] + all_proposers, key="name_full")
+            sel = st.selectbox(
+                "또는 목록에서 선택", ["선택하세요"] + all_proposers, key="name_full"
+            )
             if sel != "선택하세요":
                 if st.button(f"{sel} 법안 보기", key="name_full_btn"):
                     st.session_state["selected_proposer_member"] = sel
                     st.rerun()
 
-    # 의원 법안 표시 (탭 외부)
+    # ── 의원 법안 표시 (탭 외부) ─────────────────────────────
     selected_proposer = st.session_state.get("selected_proposer_member")
     if selected_proposer:
         st.markdown("---")
@@ -398,7 +604,6 @@ def page_member_bills():
 
         member_bills = df[df["proposer"].str.contains(selected_proposer, na=False)]
 
-        # 의원 프로필 (members_df에서)
         if not members_df.empty:
             m_info = members_df[members_df["name"] == selected_proposer]
             if not m_info.empty:
@@ -408,7 +613,7 @@ def page_member_bills():
                     f"<span style='background:{party_color};color:white;padding:3px 10px;"
                     f"border-radius:4px'>{m.get('party','')}</span> &nbsp;"
                     f"**{m.get('orig_nm','')}** &nbsp;|&nbsp; {m.get('cmit_nm','')}",
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
 
         if member_bills.empty:
@@ -416,11 +621,14 @@ def page_member_bills():
         else:
             c1, c2 = st.columns(2)
             c1.metric("총 법안 수", f"{len(member_bills)}건")
-            c2.metric("처리 완료", f"{member_bills['status'].isin(['가결','부결','대안반영폐기','철회']).sum()}건")
+            c2.metric(
+                "처리 완료",
+                f"{member_bills['status'].isin(['가결','부결','대안반영폐기','철회']).sum()}건",
+            )
             sort_opt = st.selectbox("정렬", ["최신순", "처리상태순"], key="member_sort")
             member_bills = member_bills.sort_values(
-                "propose_date" if sort_opt == "최신순" else "status",
-                ascending=(sort_opt != "최신순") if sort_opt != "최신순" else False
+                "propose_date",
+                ascending=sort_opt != "최신순",
             )
             for _, row in member_bills.head(30).iterrows():
                 render_bill_card(row)
@@ -514,7 +722,7 @@ def page_about():
         st.markdown("""
         | 항목 | 내용 |
         |------|------|
-        | 모델 | Google Gemma 3 (27B) |
+        | 모델 | Google Gemma 4 (27B) |
         | 실행 방식 | 로컬 서버 (Ollama) |
         | API | OpenAI 호환 API |
         | 처리 속도 | 법안 1건 약 1분 |
