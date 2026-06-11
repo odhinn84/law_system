@@ -426,20 +426,21 @@ def page_member_bills():
 
             with ctrl_col:
                 st.markdown("**시도 선택**")
-                for sido in sorted(SIDO_COORDS.keys()):
-                    cnt = members_df[members_df["sido"] == sido].shape[0]
-                    if st.button(
-                        f"{sido}  {cnt}명",
-                        key=f"sido_btn_{sido}",
-                        use_container_width=True,
-                    ):
-                        st.session_state["map_sido"] = sido
+                with st.container(height=500):
+                    for sido in sorted(SIDO_COORDS.keys()):
+                        cnt = members_df[members_df["sido"] == sido].shape[0]
+                        if st.button(
+                            f"{sido}  {cnt}명",
+                            key=f"sido_btn_{sido}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["map_sido"] = sido
+                            st.session_state.pop("map_gungu", None)
+                            st.rerun()
+                    if st.button("비례대표", key="sido_btn_pr", use_container_width=True):
+                        st.session_state["map_sido"] = "비례대표"
                         st.session_state.pop("map_gungu", None)
                         st.rerun()
-                if st.button("비례대표", key="sido_btn_pr", use_container_width=True):
-                    st.session_state["map_sido"] = "비례대표"
-                    st.session_state.pop("map_gungu", None)
-                    st.rerun()
 
             with map_col:
                 if prov_geo:
@@ -499,24 +500,25 @@ def page_member_bills():
 
             with ctrl_col:
                 st.markdown("**시군구 필터**")
-                # 전체 버튼
-                all_label = f"{'▶ ' if not map_gungu else ''}전체  {len(sido_members)}명"
-                if st.button(all_label, key="gu_all", use_container_width=True):
-                    st.session_state.pop("map_gungu", None)
-                    st.rerun()
-
-                gu_list = sorted([g for g in sido_members["gungu"].unique() if g])
-                for gu in gu_list:
-                    cnt = sido_members[
-                        sido_members["gungu"].str.contains(gu, na=False, regex=False)
-                    ].shape[0]
-                    label = f"{'▶ ' if map_gungu == gu else ''}{gu}  {cnt}명"
-                    if st.button(label, key=f"gu_btn_{gu}", use_container_width=True):
-                        if map_gungu == gu:
-                            st.session_state.pop("map_gungu", None)
-                        else:
-                            st.session_state["map_gungu"] = gu
+                with st.container(height=520):
+                    # 전체 버튼
+                    all_label = f"{'▶ ' if not map_gungu else ''}전체  {len(sido_members)}명"
+                    if st.button(all_label, key="gu_all", use_container_width=True):
+                        st.session_state.pop("map_gungu", None)
                         st.rerun()
+
+                    gu_list = sorted([g for g in sido_members["gungu"].unique() if g])
+                    for gu in gu_list:
+                        cnt = sido_members[
+                            sido_members["gungu"].str.contains(gu, na=False, regex=False)
+                        ].shape[0]
+                        label = f"{'▶ ' if map_gungu == gu else ''}{gu}  {cnt}명"
+                        if st.button(label, key=f"gu_btn_{gu}", use_container_width=True):
+                            if map_gungu == gu:
+                                st.session_state.pop("map_gungu", None)
+                            else:
+                                st.session_state["map_gungu"] = gu
+                            st.rerun()
 
             with map_col:
                 header = f"**{map_sido}{'  ·  ' + map_gungu if map_gungu else '  전체'}  —  {len(display_members)}명**"
