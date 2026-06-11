@@ -77,6 +77,8 @@ def load_bills() -> pd.DataFrame:
     url = f"{BASE_URL}/bills.csv"
     df = pd.read_csv(url, encoding="utf-8-sig")
     df["status"] = df["status"].fillna("심사중")
+    for col in ["party", "committee", "proposer", "summary", "core_change", "impact_detail"]:
+        df[col] = df[col].fillna("")
     for col in ["affected_occ", "affected_age", "affected_social", "affected_region", "keywords"]:
         df[col] = df[col].fillna("").apply(lambda x: x.split("|") if x else [])
     return df
