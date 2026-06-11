@@ -102,7 +102,28 @@ def git_push(message: str = None):
     return True
 
 
+def export_members_csv():
+    """의원 정보를 members.csv로 내보냄"""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql_query("SELECT * FROM members ORDER BY name", conn)
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+
+    if df.empty:
+        log.warning("의원 데이터 없음 — python collect.py --members 먼저 실행")
+        return 0
+
+    csv_path = os.path.join(DATA_DIR, "members.csv")
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    log.info("members.csv 내보냄: %d명 → %s", len(df), csv_path)
+    return len(df)
+
+
 if __name__ == "__main__":
     count = export_csv()
+    m_count = export_members_csv()
     git_push()
-    print(f"완료: {count}건 export 및 push")
+    print(f"완료: 법안 {count}건 / 의원 {m_count}명 export 및 push")

@@ -82,6 +82,16 @@ def load_bills() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600)
+def load_members() -> pd.DataFrame:
+    url = f"{BASE_URL}/members.csv"
+    try:
+        df = pd.read_csv(url, encoding="utf-8-sig")
+        return df.fillna("")
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
 def load_meta() -> dict:
     try:
         stats = requests.get(f"{BASE_URL}/stats.json", timeout=5).json()
@@ -208,54 +218,210 @@ def page_my_bills():
         render_bill_card(row, show_impact=True)
 
 
+# 시도 좌표 (지도 마커용)
+SIDO_COORDS = {
+    "서울": (37.5665, 126.9780), "부산": (35.1796, 129.0756),
+    "대구": (35.8714, 128.6014), "인천": (37.4563, 126.7052),
+    "광주": (35.1595, 126.8526), "대전": (36.3504, 127.3845),
+    "울산": (35.5384, 129.3114), "세종": (36.4800, 127.2890),
+    "경기": (37.4138, 127.5183), "강원": (37.8228, 128.1555),
+    "충북": (36.8000, 127.7000), "충남": (36.5184, 126.8000),
+    "전북": (35.7175, 127.1530), "전남": (34.8161, 126.4630),
+    "경북": (36.4919, 128.8889), "경남": (35.4606, 128.2132),
+    "제주": (33.4996, 126.5312),
+}
+
+PARTY_COLORS = {
+    "더불어민주당": "#1C5FA5",
+    "국민의힘": "#E61E2B",
+    "조국혁신당": "#004EA2",
+    "개혁신당": "#FF7210",
+    "진보당": "#D6001C",
+    "기본소득당": "#00C73C",
+    "사회민주당": "#EC008C",
+    "무소속": "#888888",
+}
+
+
+def parse_sido(orig_nm: str) -> str:
+    if not orig_nm or orig_nm == "비례대표":
+        return "비례대표"
+    return orig_nm.split()[0]
+
+
+def render_member_card(m: pd.Series, on_click_key: str = None):
+    """의원 카드 렌더링. 클릭 시 해당 의원 이름 반환"""
+    party_color = PARTY_COLORS.get(m.get("party", ""), "#888888")
+    with st.container(border=True):
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.markdown(
+                f"**{m['name']}** "
+                f"<span style='background:{party_color};color:white;padding:2px 8px;"
+                f"border-radius:4px;font-size:0.8em'>{m.get('party','')}</span>",
+                unsafe_allow_html=True
+            )
+            district = m.get("orig_nm", "")
+            cmit = m.get("cmit_nm", "")
+            info_parts = [p for p in [district, cmit] if p]
+            if info_parts:
+                st.caption(" | ".join(info_parts))
+            if m.get("homepage"):
+                st.markdown(f"[🏠 홈페이지]({m['homepage']})", unsafe_allow_html=False)
+        with col2:
+            if on_click_key:
+                return st.button("법안 보기", key=on_click_key, use_container_width=True)
+    return False
+
+
 def page_member_bills():
+    import plotly.graph_objects as go
+
     df = load_bills()
+    members_df = load_members()
     sidebar_meta(df)
 
     st.title("🗺️ 의원별 발의 법안")
-    st.caption("의원을 검색하면 발의하거나 참여한 법안을 볼 수 있습니다.")
+
+    selected_proposer = st.session_state.get("selected_proposer_member", None)
 
     tab_map, tab_name = st.tabs(["🗺️ 지역구 지도로 찾기", "🔎 이름으로 바로 찾기"])
-    selected_proposer = None
 
     with tab_map:
-        SIDO_LIST = ["서울","부산","대구","인천","광주","대전","울산","세종",
-                     "경기","강원","충북","충남","전북","전남","경북","경남","제주"]
-        sido = st.selectbox("시·도 선택", ["선택하세요"] + SIDO_LIST)
-        if sido != "선택하세요":
-            st.info(f"💡 **{sido}** 지역구 의원 지도는 의원 정보 API 연동 후 활성화됩니다. 이름 검색 탭을 이용해 주세요.")
+        if members_df.empty:
+            st.warning("의원 데이터를 불러올 수 없습니다.")
+        else:
+            members_df["sido"] = members_df["orig_nm"].apply(parse_sido)
+
+            # 시도별 의원 수 집계
+            sido_counts = members_df[members_df["sido"] != "비례대표"]["sido"].value_counts().to_dict()
+
+            lats, lons, texts, sizes, sidos = [], [], [], [], []
+            for sido, (lat, lon) in SIDO_COORDS.items():
+                cnt = sido_counts.get(sido, 0)
+                lats.append(lat)
+                lons.append(lon)
+                texts.append(f"<b>{sido}</b><br>{cnt}명")
+                sizes.append(max(cnt * 1.5, 12))
+                sidos.append(sido)
+
+            fig = go.Figure(go.Scattergeo(
+                lat=lats, lon=lons,
+                text=texts,
+                hoverinfo="text",
+                mode="markers+text",
+                textposition="top center",
+                textfont=dict(size=11, color="black"),
+                marker=dict(
+                    size=sizes,
+                    color=[sido_counts.get(s, 0) for s in sidos],
+                    colorscale="Blues",
+                    showscale=True,
+                    colorbar=dict(title="의원 수"),
+                    line=dict(color="white", width=1),
+                ),
+                customdata=sidos,
+            ))
+            fig.update_layout(
+                geo=dict(
+                    scope="asia",
+                    center=dict(lat=36.5, lon=127.8),
+                    projection_scale=7,
+                    showland=True, landcolor="#f0f0f0",
+                    showocean=True, oceancolor="#d0e8f0",
+                    showcoastlines=True, coastlinecolor="gray",
+                    showframe=False,
+                ),
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=450,
+            )
+
+            event = st.plotly_chart(fig, on_select="rerun", key="sido_map", use_container_width=True)
+
+            # 지도 클릭 or selectbox
+            map_sido = None
+            if event and hasattr(event, "selection") and event.selection.points:
+                map_sido = event.selection.points[0].get("customdata")
+
+            sido_list = sorted(SIDO_COORDS.keys()) + ["비례대표"]
+            sel_sido = st.selectbox("또는 지역 직접 선택", ["선택하세요"] + sido_list, key="sido_select")
+            if sel_sido != "선택하세요":
+                map_sido = sel_sido
+
+            if map_sido:
+                st.markdown(f"#### 📍 {map_sido} 지역구 의원")
+                sido_members = members_df[members_df["sido"] == map_sido].reset_index(drop=True)
+                if sido_members.empty:
+                    st.info("해당 지역 의원 정보가 없습니다.")
+                else:
+                    cols = st.columns(3)
+                    for i, (_, m) in enumerate(sido_members.iterrows()):
+                        with cols[i % 3]:
+                            clicked = render_member_card(m, on_click_key=f"mc_{map_sido}_{i}")
+                            if clicked:
+                                st.session_state["selected_proposer_member"] = m["name"]
+                                st.rerun()
 
     with tab_name:
         all_proposers = sorted(df["proposer"].dropna().unique().tolist())
-        name_query = st.text_input("의원 이름 입력", placeholder="예: 홍길동")
+        name_query = st.text_input("의원 이름 입력", placeholder="예: 홍길동", key="name_search")
         if name_query:
             matched = [p for p in all_proposers if name_query in p]
             if not matched:
                 st.warning(f"'{name_query}' 의원을 찾을 수 없습니다.")
             elif len(matched) == 1:
-                selected_proposer = matched[0]
+                if st.button(f"{matched[0]} 법안 보기", key="name_one"):
+                    st.session_state["selected_proposer_member"] = matched[0]
+                    st.rerun()
             else:
-                selected_proposer = st.selectbox("의원 선택", matched)
+                sel = st.selectbox("의원 선택", ["선택하세요"] + matched, key="name_multi")
+                if sel != "선택하세요":
+                    if st.button(f"{sel} 법안 보기", key="name_sel"):
+                        st.session_state["selected_proposer_member"] = sel
+                        st.rerun()
         else:
-            sel = st.selectbox("또는 목록에서 선택", ["선택하세요"] + all_proposers)
+            sel = st.selectbox("또는 목록에서 선택", ["선택하세요"] + all_proposers, key="name_full")
             if sel != "선택하세요":
-                selected_proposer = sel
+                if st.button(f"{sel} 법안 보기", key="name_full_btn"):
+                    st.session_state["selected_proposer_member"] = sel
+                    st.rerun()
 
+    # 의원 법안 표시 (탭 외부)
+    selected_proposer = st.session_state.get("selected_proposer_member")
     if selected_proposer:
         st.markdown("---")
-        st.subheader(f"📋 {selected_proposer} 의원 발의/참여 법안")
+        col_title, col_back = st.columns([5, 1])
+        col_title.subheader(f"📋 {selected_proposer} 의원 발의/참여 법안")
+        if col_back.button("← 목록으로", key="back_btn"):
+            st.session_state["selected_proposer_member"] = None
+            st.rerun()
+
         member_bills = df[df["proposer"].str.contains(selected_proposer, na=False)]
+
+        # 의원 프로필 (members_df에서)
+        if not members_df.empty:
+            m_info = members_df[members_df["name"] == selected_proposer]
+            if not m_info.empty:
+                m = m_info.iloc[0]
+                party_color = PARTY_COLORS.get(m.get("party", ""), "#888888")
+                st.markdown(
+                    f"<span style='background:{party_color};color:white;padding:3px 10px;"
+                    f"border-radius:4px'>{m.get('party','')}</span> &nbsp;"
+                    f"**{m.get('orig_nm','')}** &nbsp;|&nbsp; {m.get('cmit_nm','')}",
+                    unsafe_allow_html=True
+                )
+
         if member_bills.empty:
             st.info("해당 의원의 법안이 없습니다.")
         else:
-            col1, col2 = st.columns(2)
-            col1.metric("총 법안 수", f"{len(member_bills)}건")
-            col2.metric("처리 완료", f"{member_bills['status'].isin(['가결','부결','대안반영폐기','철회']).sum()}건")
+            c1, c2 = st.columns(2)
+            c1.metric("총 법안 수", f"{len(member_bills)}건")
+            c2.metric("처리 완료", f"{member_bills['status'].isin(['가결','부결','대안반영폐기','철회']).sum()}건")
             sort_opt = st.selectbox("정렬", ["최신순", "처리상태순"], key="member_sort")
-            if sort_opt == "최신순":
-                member_bills = member_bills.sort_values("propose_date", ascending=False)
-            else:
-                member_bills = member_bills.sort_values("status")
+            member_bills = member_bills.sort_values(
+                "propose_date" if sort_opt == "최신순" else "status",
+                ascending=(sort_opt != "최신순") if sort_opt != "최신순" else False
+            )
             for _, row in member_bills.head(30).iterrows():
                 render_bill_card(row)
 

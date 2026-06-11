@@ -253,13 +253,104 @@ def get_unanalyzed_bills(limit: int = 50) -> list[dict]:
     return [dict(zip(cols, r)) for r in rows]
 
 
+
+
+
+# ── 의원 정보 수집 ────────────────────────────────────────
+def fetch_members(age: str = "22") -> list[dict]:
+    """국회의원 현황 API (nwvrqwxyaytdsfvhu)로 현역 의원 목록 조회"""
+    url = "https://open.assembly.go.kr/portal/openapi/nwvrqwxyaytdsfvhu"
+    all_members = []
+    page = 1
+    while True:
+        params = {"KEY": API_KEY, "Type": "json", "pIndex": page, "pSize": 100, "AGE": age}
+        try:
+            resp = requests.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            log.error("의원 API 오류 (page %d): %s", page, e)
+            break
+        try:
+            rows = data["nwvrqwxyaytdsfvhu"][1]["row"]
+        except (KeyError, IndexError):
+            break
+        all_members.extend(rows)
+        log.info("의원 수집 page %d: %d명", page, len(rows))
+        if len(rows) < 100:
+            break
+        page += 1
+    return all_members
+
+
+def save_members(members: list[dict]):
+    """의원 정보를 SQLite members 테이블에 저장 (UPSERT)"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS members (
+            mona_cd     TEXT PRIMARY KEY,
+            name        TEXT,
+            party       TEXT,
+            orig_nm     TEXT,
+            elect_gbn   TEXT,
+            cmit_nm     TEXT,
+            units       TEXT,
+            homepage    TEXT,
+            email       TEXT,
+            collected_at TEXT
+        )
+    """)
+    for m in members:
+        mona_cd = m.get("MONA_CD", "")
+        if not mona_cd:
+            continue
+        conn.execute("""
+            INSERT OR REPLACE INTO members
+            (mona_cd, name, party, orig_nm, elect_gbn, cmit_nm, units, homepage, email, collected_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (
+            mona_cd,
+            m.get("HG_NM", ""),
+            m.get("POLY_NM", ""),
+            m.get("ORIG_NM", ""),
+            m.get("ELECT_GBN_NM", ""),
+            m.get("CMIT_NM", ""),
+            m.get("UNITS", ""),
+            m.get("HOMEPAGE", ""),
+            m.get("E_MAIL", ""),
+            datetime.now().isoformat(),
+        ))
+    conn.commit()
+    conn.close()
+    log.info("의원 정보 저장 완료: %d명", len(members))
+
+
+def get_all_members() -> list[dict]:
+    """DB에서 의원 전체 목록 반환"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute("SELECT * FROM members ORDER BY name").fetchall()
+        cols = [d[0] for d in conn.execute("SELECT * FROM members LIMIT 0").description]
+        conn.close()
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception:
+        conn.close()
+        return []
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true", help="22대 국회 전체 수집 (max_pages=300)")
     parser.add_argument("--pages", type=int, default=5, help="수집 페이지 수 (기본 5)")
     parser.add_argument("--no-detail", action="store_true", help="제안이유 수집 건너뜀")
+    parser.add_argument("--members", action="store_true", help="의원 정보 수집")
     args = parser.parse_args()
 
-    max_pages = 300 if args.all else args.pages
-    collect_bills(max_pages=max_pages, fetch_detail=not args.no_detail)
+    if args.members:
+        init_db()
+        members = fetch_members(age="22")
+        save_members(members)
+    else:
+        max_pages = 300 if args.all else args.pages
+        collect_bills(max_pages=max_pages, fetch_detail=not args.no_detail)
