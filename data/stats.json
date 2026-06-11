@@ -1,11 +1,11 @@
 {
-  "total_bills": 57,
+  "total_bills": 60,
   "by_status": {},
   "by_urgency": {
-    "": 57
+    "": 60
   },
   "by_impact": {
-    "positive": 53,
+    "positive": 56,
     "mixed": 4
   },
   "last_propose_date": "2026-06-10"
