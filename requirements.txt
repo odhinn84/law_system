@@ -1,0 +1,13 @@
+# 데이터 수집
+requests==2.32.3
+python-dotenv==1.0.1
+
+# LLM (Ollama OpenAI 호환)
+openai==1.82.0
+
+# 데이터 처리
+pandas==2.2.3
+
+# 웹 앱
+streamlit==1.45.1
+plotly==6.1.2
