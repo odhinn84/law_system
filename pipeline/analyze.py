@@ -90,15 +90,21 @@ ANALYSIS_PROMPT = """당신은 대한민국 법안을 시민 친화적으로 분
   "affected_social": {social_list},
   "affected_regions": {region_list},
   "keywords": ["키워드1", "키워드2", "키워드3"],
-  "benefited_groups": ["이 법안으로 혜택·권리가 강화되는 집단 (자유 서술, 없으면 [])"],
-  "harmed_groups": ["이 법안으로 부담·규제가 늘거나 불이익받는 집단 (자유 서술, 없으면 [])"]
+  "benefited_groups": ["혜택받는 시민/직업/사회집단 이름만 (설명 금지, 없으면 [])"],
+  "harmed_groups": ["불이익받는 시민/직업/사회집단 이름만 (설명 금지, 없으면 [])"]
 }}
 
 주의:
 - affected_occupations는 위 한국표준직업분류(KSCO) 목록에서만 선택, 해당 없으면 []
 - affected_ages/social/regions도 위 제시 목록에서만 선택, 해당 없으면 []
 - impact_direction: 법안이 영향받는 집단 전반에 미치는 효과 기준
-- benefited_groups / harmed_groups: 이해관계가 충돌하는 집단을 명확히 구분. 예) 임차인 vs 임대인
+- benefited_groups / harmed_groups 규칙:
+  · 집단 이름만 작성. 영향 설명 포함 금지
+  · 올바른 예: "임차인", "소상공인", "청년층", "장애인", "자영업자"
+  · 잘못된 예: "부담이 늘어나는 선거관리위원회", "혜택을 받는 임차인"
+  · 정부기관·행정기관·공공기관 제외 (선거관리위원회, 지자체, 국세청 등)
+  · 실제 시민·직업군·사회집단만 포함
+  · 이해관계 충돌 집단을 명확히 구분. 예) 임차인 vs 임대인
 - JSON 외 다른 텍스트 출력 금지"""
 
 
