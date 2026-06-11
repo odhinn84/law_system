@@ -608,10 +608,31 @@ def page_stats():
         st.plotly_chart(fig3, use_container_width=True)
 
     st.subheader("정당별 발의 현황")
-    party_cnt = df["party"].value_counts().head(10).reset_index()
+    import re
+    members_df = load_members()
+    name_to_party = (
+        dict(zip(members_df["name"], members_df["party"]))
+        if not members_df.empty else {}
+    )
+    def _resolve_party(proposer: str) -> str:
+        if not proposer:
+            return "기타"
+        m = re.match(r"([가-힣]{2,5})", str(proposer))
+        name = m.group(1) if m else ""
+        return name_to_party.get(name, "기타")
+    party_series = df["proposer"].apply(_resolve_party)
+    party_cnt = party_series.value_counts().head(10).reset_index()
     party_cnt.columns = ["정당", "건수"]
-    fig4 = px.bar(party_cnt, x="정당", y="건수", color="정당")
-    st.plotly_chart(fig4, use_container_width=True)
+    party_cnt = party_cnt[party_cnt["정당"] != "기타"]
+    if not party_cnt.empty:
+        party_colors = {k: v for k, v in PARTY_COLORS.items() if k in party_cnt["정당"].values}
+        fig4 = px.bar(
+            party_cnt, x="정당", y="건수",
+            color="정당", color_discrete_map=party_colors,
+        )
+        st.plotly_chart(fig4, use_container_width=True)
+    else:
+        st.info("정당 정보를 불러올 수 없습니다.")
 
 
 def page_about():
