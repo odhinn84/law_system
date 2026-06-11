@@ -89,13 +89,16 @@ ANALYSIS_PROMPT = """당신은 대한민국 법안을 시민 친화적으로 분
   "affected_ages": {age_list},
   "affected_social": {social_list},
   "affected_regions": {region_list},
-  "keywords": ["키워드1", "키워드2", "키워드3"]
+  "keywords": ["키워드1", "키워드2", "키워드3"],
+  "benefited_groups": ["이 법안으로 혜택·권리가 강화되는 집단 (자유 서술, 없으면 [])"],
+  "harmed_groups": ["이 법안으로 부담·규제가 늘거나 불이익받는 집단 (자유 서술, 없으면 [])"]
 }}
 
 주의:
 - affected_occupations는 위 한국표준직업분류(KSCO) 목록에서만 선택, 해당 없으면 []
 - affected_ages/social/regions도 위 제시 목록에서만 선택, 해당 없으면 []
 - impact_direction: 법안이 영향받는 집단 전반에 미치는 효과 기준
+- benefited_groups / harmed_groups: 이해관계가 충돌하는 집단을 명확히 구분. 예) 임차인 vs 임대인
 - JSON 외 다른 텍스트 출력 금지"""
 
 
@@ -153,8 +156,9 @@ def save_analysis(bill_id: str, result: dict, failed: bool = False):
         INSERT OR REPLACE INTO bill_analysis
         (bill_id, bill_summary, core_change, impact_direction, impact_detail,
          affected_occ, affected_age, affected_social, affected_region,
-         keywords, urgency, analyzed_at, parse_failed)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+         keywords, urgency, analyzed_at, parse_failed,
+         benefited_groups, harmed_groups)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         bill_id,
         result.get("bill_summary", ""),
@@ -166,9 +170,11 @@ def save_analysis(bill_id: str, result: dict, failed: bool = False):
         join(result.get("affected_social", [])),
         join(result.get("affected_regions", [])),
         join(result.get("keywords", [])),
-        "",  # urgency 제거 — 컬럼은 유지(스키마 호환), 값은 미사용
+        "",  # urgency — 컬럼 유지, 값 미사용
         datetime.now().isoformat(),
         1 if failed else 0,
+        join(result.get("benefited_groups", [])),
+        join(result.get("harmed_groups", [])),
     ))
     conn.commit()
     conn.close()

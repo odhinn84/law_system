@@ -56,9 +56,18 @@ def init_db():
             keywords         TEXT,
             urgency          TEXT,
             analyzed_at      TEXT,
-            parse_failed     INTEGER DEFAULT 0
+            parse_failed     INTEGER DEFAULT 0,
+            benefited_groups TEXT DEFAULT '',
+            harmed_groups    TEXT DEFAULT ''
         )
     """)
+    # 기존 DB 마이그레이션 (컬럼 없는 경우 추가)
+    for col in ("benefited_groups", "harmed_groups"):
+        try:
+            conn.execute(f"ALTER TABLE bill_analysis ADD COLUMN {col} TEXT DEFAULT ''")
+            log.info("bill_analysis 컬럼 추가: %s", col)
+        except Exception:
+            pass  # 이미 존재하면 무시
     conn.commit()
     conn.close()
     log.info("DB 초기화 완료: %s", DB_PATH)

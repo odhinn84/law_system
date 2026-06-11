@@ -46,7 +46,9 @@ def export_csv():
             a.keywords,
             a.urgency,
             a.analyzed_at,
-            a.parse_failed
+            a.parse_failed,
+            COALESCE(a.benefited_groups, '') AS benefited_groups,
+            COALESCE(a.harmed_groups, '')    AS harmed_groups
         FROM bills b
         INNER JOIN bill_analysis a ON b.bill_id = a.bill_id
         WHERE a.parse_failed = 0

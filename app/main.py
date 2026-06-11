@@ -76,10 +76,23 @@ IMPACT_EMOJI = {
 def load_bills() -> pd.DataFrame:
     url = f"{BASE_URL}/bills.csv"
     df = pd.read_csv(url, encoding="utf-8-sig")
+    import re as _re
     df["status"] = df["status"].fillna("심사중")
     for col in ["party", "committee", "proposer", "summary", "core_change", "impact_detail"]:
         df[col] = df[col].fillna("")
-    for col in ["affected_occ", "affected_age", "affected_social", "affected_region", "keywords"]:
+    # party가 비어있는 경우 members.csv에서 발의자 이름으로 조인
+    if df["party"].eq("").all():
+        try:
+            mdf = pd.read_csv(f"{BASE_URL}/members.csv", encoding="utf-8-sig").fillna("")
+            _n2p = dict(zip(mdf["name"], mdf["party"]))
+            def _party_from_proposer(p: str) -> str:
+                s = _re.sub(r"의원.*", "", str(p))
+                m = _re.match(r"([가-힣]{2,4})", s)
+                return _n2p.get(m.group(1), "") if m else ""
+            df["party"] = df["proposer"].apply(_party_from_proposer)
+        except Exception:
+            pass
+    for col in ["affected_occ", "affected_age", "affected_social", "affected_region", "keywords", "benefited_groups", "harmed_groups"]:
         df[col] = df[col].fillna("").apply(lambda x: x.split("|") if x else [])
     return df
 
@@ -113,12 +126,19 @@ def render_bill_card(row, show_impact: bool = False):
             st.caption(
                 f"📅 {row['propose_date']} &nbsp;|&nbsp; "
                 f"🏛 {row['committee']} &nbsp;|&nbsp; "
-                f"👤 {row['proposer']} ({row['party']})"
+                f"👤 {row['proposer']}" + (f" ({row['party']})" if row.get('party') else "")
             )
             st.write(row["summary"] or "요약 없음")
             tags = list(row["affected_occ"]) + list(row["affected_age"]) + list(row["affected_social"])
             if tags:
                 st.markdown(" ".join(f"`{t}`" for t in tags if t))
+            # 혜택/불이익 집단
+            benefited = [g for g in row.get("benefited_groups", []) if g]
+            harmed = [g for g in row.get("harmed_groups", []) if g]
+            if benefited:
+                st.markdown(" ".join(f"<span style='background:#d1fae5;color:#065f46;padding:1px 7px;border-radius:3px;font-size:0.8em'>✅ {g}</span>" for g in benefited), unsafe_allow_html=True)
+            if harmed:
+                st.markdown(" ".join(f"<span style='background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:3px;font-size:0.8em'>⚠️ {g}</span>" for g in harmed), unsafe_allow_html=True)
         with col2:
             if show_impact:
                 impact = IMPACT_EMOJI.get(row.get("impact_direction", ""), "")
